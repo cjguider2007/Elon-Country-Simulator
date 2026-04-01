@@ -1,228 +1,154 @@
+# country_simulator.py
 import streamlit as st
-import pandas as pd
-import json
-import os
+from docx import Document
+import PyPDF2
 import random
-from PyPDF2 import PdfReader
+import os
 
+# ------------------------
+# INITIALIZATION
+# ------------------------
 st.set_page_config(page_title="Country Simulator", layout="wide")
+st.title("📜 Country Simulation Game")
 
-SAVE_FILE = "savegame.json"
-
-# ------------------------
-# LOAD / INIT STATE
-# ------------------------
-if os.path.exists(SAVE_FILE):
-    with open(SAVE_FILE, "r") as f:
-        game_state = json.load(f)
-else:
-    game_state = {
-        "country_name": "Unnamed Confederation",
-        "constitution": "Articles of Confederation (unnamed country)",
-        "laws": [],
-        "metrics": {"economy": 50, "happiness": 50, "stability": 50},
-        "regions": {},
-        "parties": {
-            "Progressive": {"ideology": "Social / Environmental"},
-            "Conservative": {"ideology": "Economic / Security"},
-            "Centrist": {"ideology": "Balanced"}
-        },
-        "history": [],
-        "legislature": [
-            {"name": "Player", "party": "Independent", "type": "Human"},
-            {"name": "AI_1", "party": "Progressive", "type": "AI"},
-            {"name": "AI_2", "party": "Conservative", "type": "AI"},
-            {"name": "AI_3", "party": "Centrist", "type": "AI"}
-        ]
+# Initialize metrics in session state
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {
+        "Economy": 50,
+        "Happiness": 50,
+        "Stability": 50,
+        "Social Policy": 50,
+        "Foreign Policy": 50,
+        "Military": 50,
+        "War Threat": 0,
+        "Environment": 50
     }
 
-def save():
-    with open(SAVE_FILE, "w") as f:
-        json.dump(game_state, f, indent=4)
+if "history" not in st.session_state:
+    st.session_state.history = []
 
 # ------------------------
-# AI VOTING
+# KEYWORD EFFECTS
 # ------------------------
-def ai_vote(party):
-    if party == "Progressive":
-        return "Yes"
-    elif party == "Conservative":
-        return "No"
-    return "Yes" if random.random() > 0.5 else "No"
+KEYWORD_EFFECTS = {
+    # Economic
+    "tax increase": {"Economy": -2, "Happiness": -1, "Social Policy": +1},
+    "tax cut": {"Economy": +2, "Stability": -1},
+    "trade agreement": {"Economy": +2, "Happiness": +1, "Foreign Policy": +3},
+    "deregulation": {"Economy": +2, "Stability": -1, "Social Policy": -1, "Environment": -1},
+    # Social
+    "healthcare": {"Economy": -1, "Happiness": +3, "Social Policy": +3},
+    "education": {"Economy": +1, "Happiness": +2, "Social Policy": +3},
+    "civil rights": {"Happiness": +2, "Stability": +2, "Social Policy": +3},
+    "welfare": {"Economy": -1, "Happiness": +2, "Social Policy": +2},
+    # Foreign / War
+    "declare war": {"Economy": -3, "Happiness": -2, "Stability": -2, "Foreign Policy": +3, "Military": +3, "War Threat": +3},
+    "peace treaty": {"Economy": +1, "Happiness": +1, "Stability": +1, "Foreign Policy": +3, "War Threat": -1},
+    "sanctions": {"Economy": -1, "Stability": +1, "Foreign Policy": -2, "War Threat": +1},
+    "military spending": {"Economy": -2, "Stability": +2, "Foreign Policy": +1, "Military": +3},
+    "invasion repelled": {"Economy": +1, "Happiness": +2, "Stability": +2, "Foreign Policy": +1, "Military": +2},
+    "environment": {"Economy": -1, "Happiness": +2, "Stability": +1, "Environment": +3}
+}
 
 # ------------------------
-# FUNCTIONS
+# FUNCTION: EXTRACT TEXT FROM FILE
 # ------------------------
-def propose_law(title, content):
-    game_state["laws"].append({"title": title, "content": content, "votes": {}})
-    game_state["history"].append(f"Law proposed: {title}")
-    save()
-
-def vote_on_law(index, vote):
-    law = game_state["laws"][index]
-    law["votes"]["Player"] = vote
-
-    for member in game_state["legislature"]:
-        if member["type"] == "AI":
-            law["votes"][member["name"]] = ai_vote(member["party"])
-
-    yes = list(law["votes"].values()).count("Yes")
-    no = list(law["votes"].values()).count("No")
-
-    if yes > no:
-        for k in game_state["metrics"]:
-            game_state["metrics"][k] += 2
-        for r in game_state["regions"].values():
-            r["economy"] += 2
-            r["happiness"] += 1
-            r["stability"] += 1
-        result = "PASSED"
+def extract_text(file):
+    text = ""
+    if file.name.endswith(".pdf"):
+        pdf_reader = PyPDF2.PdfReader(file)
+        for page in pdf_reader.pages:
+            text += page.extract_text().lower()
+    elif file.name.endswith(".docx"):
+        doc = Document(file)
+        for para in doc.paragraphs:
+            text += para.text.lower()
     else:
-        for k in game_state["metrics"]:
-            game_state["metrics"][k] -= 1
-        for r in game_state["regions"].values():
-            r["economy"] -= 1
-            r["happiness"] -= 2
-            r["stability"] -= 1
-        result = "FAILED"
-
-    game_state["history"].append(f"{law['title']} {result} ({yes}-{no})")
-    save()
-
-def add_region(name):
-    if name not in game_state["regions"] and name != "":
-        game_state["regions"][name] = {"economy": 50, "happiness": 50, "stability": 50}
-        game_state["history"].append(f"Region added: {name}")
-        save()
-
-def add_party(name, ideology):
-    if name != "":
-        game_state["parties"][name] = {"ideology": ideology}
-        game_state["history"].append(f"Party created: {name}")
-        save()
+        st.error("Unsupported file format! Upload PDF or DOCX only.")
+    return text
 
 # ------------------------
-# UI
+# FUNCTION: CALCULATE EFFECTS
 # ------------------------
-st.title("🌍 Country Simulator")
+def calculate_effects(text):
+    effects = {metric: 0 for metric in st.session_state.metrics}
+    for keyword, vals in KEYWORD_EFFECTS.items():
+        if keyword in text:
+            for metric, value in vals.items():
+                effects[metric] += value
+    return effects
 
-tabs = st.tabs([
-    "🏠 Country",
-    "🏛️ Legislature",
-    "🗺️ Regions",
-    "📝 Laws",
-    "🏛️ Parties",
-    "📊 Metrics",
-    "📜 History",
-    "⚠️ Reset"
-])
+# ------------------------
+# FUNCTION: APPLY EFFECTS
+# ------------------------
+def apply_effects(effects, law_name, passed):
+    for metric, change in effects.items():
+        if passed:
+            st.session_state.metrics[metric] += change
+        else:
+            # small penalty for failed opportunity
+            st.session_state.metrics[metric] -= max(1, change // 2)
+        # Clamp between 0-100
+        st.session_state.metrics[metric] = min(max(st.session_state.metrics[metric], 0), 100)
+    # Log history
+    st.session_state.history.append({
+        "Law": law_name,
+        "Passed": passed,
+        "Effects": effects
+    })
 
-# COUNTRY
-with tabs[0]:
-    st.subheader("Country Name")
-    name = st.text_input("Name", game_state["country_name"])
-    if st.button("Update Name"):
-        game_state["country_name"] = name
-        save()
-        st.success("Updated!")
+# ------------------------
+# UPLOAD LAW
+# ------------------------
+st.header("📄 Propose a Law or Action")
+law_file = st.file_uploader("Upload PDF or Word (.docx) of your law:", type=["pdf", "docx"])
+law_name = st.text_input("Or enter a law/action name:")
 
-    st.subheader("Constitution")
-    constitution = st.text_area("Edit Constitution", game_state["constitution"])
-    if st.button("Save Constitution"):
-        game_state["constitution"] = constitution
-        save()
-        st.success("Saved!")
+# ------------------------
+# AI VOTING SYSTEM
+# ------------------------
+def simulate_votes():
+    # Parties: Progressive, Conservative, Centrist
+    votes = {"Progressive": random.choice([True, False]),
+             "Conservative": random.choice([True, False]),
+             "Centrist": random.choice([True, False])}
+    return votes
 
-# LEGISLATURE
-with tabs[1]:
-    st.subheader("Legislature")
-    df = pd.DataFrame(game_state["legislature"])
-    st.dataframe(df)
+if st.button("Submit Law / Action"):
+    if law_file or law_name:
+        # Extract text if file uploaded
+        text = ""
+        if law_file:
+            text = extract_text(law_file)
+        if law_name:
+            text += " " + law_name.lower()
+        # Calculate effects
+        effects = calculate_effects(text)
+        # AI votes
+        votes = simulate_votes()
+        player_vote = st.radio("Your Vote:", ("Yes", "No"), index=0)
+        yes_count = sum(votes.values()) + (1 if player_vote == "Yes" else 0)
+        no_count = len(votes) - sum(votes.values()) + (1 if player_vote == "No" else 0)
+        passed = yes_count > no_count
+        apply_effects(effects, law_name if law_name else law_file.name, passed)
+        st.success(f"Law {'PASSED' if passed else 'FAILED'}! ✅" if passed else f"Law FAILED ❌")
+        st.write("AI Votes:", votes)
+        st.write("Effects Applied:", effects)
+    else:
+        st.warning("Please upload a file or enter a law name!")
 
-    counts = df["party"].value_counts()
-    st.bar_chart(counts)
+# ------------------------
+# METRICS DISPLAY
+# ------------------------
+st.header("📊 Country Metrics")
+for metric, value in st.session_state.metrics.items():
+    st.progress(value/100, text=f"{metric}: {value}")
 
-    if len(counts) > 0:
-        st.success(f"{counts.idxmax()} controls ({counts.max()}/{len(df)})")
-
-# REGIONS
-with tabs[2]:
-    st.subheader("Regions")
-    new_region = st.text_input("New Region")
-    if st.button("Add Region"):
-        add_region(new_region)
-
-    for r, stats in game_state["regions"].items():
-        st.write(f"**{r}** → {stats}")
-
-# LAWS
-with tabs[3]:
-    st.subheader("Propose Law")
-
-    title = st.text_input("Law Title")
-    pdf = st.file_uploader("Upload PDF", type="pdf")
-
-    if st.button("Submit Law"):
-        content = ""
-        if pdf:
-            reader = PdfReader(pdf)
-            for page in reader.pages:
-                text = page.extract_text()
-                if text:
-                    content += text
-        propose_law(title, content)
-
-    st.subheader("Vote")
-
-    for i, law in enumerate(game_state["laws"]):
-        st.write(f"### {law['title']}")
-        st.write(law["content"][:300] if law["content"] else "No content")
-
-        yes = list(law["votes"].values()).count("Yes")
-        no = list(law["votes"].values()).count("No")
-
-        st.write(f"👍 {yes} | 👎 {no}")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button(f"YES {i}"):
-                vote_on_law(i, "Yes")
-                st.experimental_rerun()
-        with col2:
-            if st.button(f"NO {i}"):
-                vote_on_law(i, "No")
-                st.experimental_rerun()
-
-        st.write(law["votes"])
-
-# PARTIES
-with tabs[4]:
-    st.subheader("Political Parties")
-
-    name = st.text_input("Party Name")
-    ideology = st.text_input("Ideology")
-
-    if st.button("Create Party"):
-        add_party(name, ideology)
-
-    for p, data in game_state["parties"].items():
-        st.write(f"**{p}** - {data['ideology']}")
-
-# METRICS
-with tabs[5]:
-    st.subheader("Country Metrics")
-    st.bar_chart(pd.DataFrame.from_dict(game_state["metrics"], orient="index"))
-
-# HISTORY
-with tabs[6]:
-    st.subheader("History")
-    for h in game_state["history"][-20:]:
-        st.write("-", h)
-
-# RESET
-with tabs[7]:
-    st.subheader("Reset Game")
-    if st.button("Reset Country"):
-        if os.path.exists(SAVE_FILE):
-            os.remove(SAVE_FILE)
-        st.success("Reset complete. Refresh page.")
+# ------------------------
+# HISTORY DISPLAY
+# ------------------------
+st.header("📜 Law & Action History")
+for entry in st.session_state.history[::-1]:
+    st.write(f"**{entry['Law']}** — {'PASSED' if entry['Passed'] else 'FAILED'}")
+    st.write(entry["Effects"])
+    st.write("---")
